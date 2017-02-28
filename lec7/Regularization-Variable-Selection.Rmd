@@ -1,0 +1,288 @@
+---
+title: "Regularization and Variable Selection: Ridge Regression, LASSO, and Elastic Net"
+author: "Günter J. Hitsch"
+date: "February 15, 2017"
+output: pdf_document
+urlcolor: blue
+graphics: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE,
+                      fig.width = 5.5, fig.height = 4.5, fig.align = "right")
+```
+
+```{r, include = FALSE}
+library(data.table)
+library(ggplot2)
+library(glmnet)
+library(knitr)
+```
+
+
+
+
+#### `glmnet` package
+
+For more information on the `glmnet` package please consult the corresponding [vignette](https://web.stanford.edu/~hastie/Papers/Glmnet_Vignette.pdf).
+
+
+
+#### Data
+
+We simulate a data set with "true" and "false" inputs. The true inputs affect the outcome variable (with a coefficient $\beta_k=1$), the false inputs have no impact on the output. The inputs, $x_k$, are uniformly distributed on $[0,1]$, and the error term is drawn from a normal distribution centered at 0.
+
+```{r, results = "hide"}
+N_true_inputs  = 5       # Number of true inputs
+N_false_inputs = 20      # Number of false inputs
+n_obs          = 1000    # Number of observations
+error_sd       = 1       # Standard deviation of the error term
+
+# Total number of inputs (not including the intercept)
+p = N_true_inputs + N_false_inputs
+
+# Paramter vector: True inputs have coefficient = 1.0
+beta = c(rep(1.0, N_true_inputs), rep(0.0, N_false_inputs))
+
+# Simulate the data: Note that X is a matrix, not a data.table
+set.seed(963)
+X       = matrix(runif(n_obs*p), nrow = n_obs, ncol = p)
+epsilon = rnorm(n_obs, sd = error_sd)
+y       = X %*% beta + epsilon
+
+# Pack the data into a data.table
+DT = as.data.table(X)
+DT[, y := y]
+new_names_true  = paste0("x_true_", 1:N_true_inputs)
+new_names_false = paste0("x_false_", 1:N_false_inputs)
+setnames(DT, names(DT), c(new_names_true, new_names_false, "y"))
+```
+
+
+
+#### Linear regression
+
+```{r, results = "hide"}
+fit_OLS = lm(y ~ ., data = DT)
+summary_OLS = summary(fit_OLS)
+
+# Collect results
+results = data.table(input   = rownames(summary_OLS$coefficients),
+                     est_OLS = summary_OLS$coefficients[, 1],
+                     p_OLS   = summary_OLS$coefficients[, 4])
+
+summary(fit_OLS)
+```
+
+
+
+#### Ridge regression
+
+First, a note on how to use `glmnet`. The general formula is
+
+```{}
+fit = glmnet(x = X, y = y, alpha = ...)
+```
+
+`X` is a matrix with inputs as columns, and `y` is the output vector. `alpha` is the elastic-net parameter. To estimate a ridge regression, we set `alpha = 0`:
+
+```{r}
+fit_ridge = glmnet(x = X, y = y, alpha = 0.0)
+plot(fit_ridge, xvar = "lambda")
+```
+
+\medskip
+
+Typically your data will be a data.table (or data frame) `DT`. To create the `X` matrix and the `y` use:
+
+```{r, eval = FALSE}
+X = model.matrix(y_var ~ 0 + x_var_1 + x_var_2 + ..., data = DT)
+y = DT$y_var
+```
+
+Note how to use the `model.matrix` formula: You specify an R formula corresponding to the regression that you would like to estimate. In addition you need to add `0 +` to the right-hand side of the formula to remove the intercept. The intercept is automatically supplied by `glmnet`. In our example:
+
+\medskip
+
+```{r, eval = FALSE}
+X_ = model.matrix(y ~ 0 + ., data = DT)
+y_ = DT$y
+
+sum(abs(X_ - X))     # X_ and X, y_ and y are numerically identical
+sum(abs(y_ - y))
+```
+
+\medskip
+
+Now we use cross-validation to find the tuning parameter that provides the best out-of-sample fit. `cv.glmnet` provides a range of model estimates for different tuning parameters, $\lambda$. To find the coefficients for the $\lambda$ value with the lowest cross-validation error we use the `s = "lambda.min"` option. Note that `"lambda.1se"` selects the tuning parameter for the most regularized model within one standard deviation of the minimum cross-validation error.
+
+```{r, results = "hide"}
+cv_ridge = cv.glmnet(x = X, y = y, alpha = 0.0)
+cv_ridge$lambda.min
+cv_ridge$lambda.1se
+results[, est_ridge := coef(cv_ridge, s = "lambda.min")[,1]]
+coef(cv_ridge, s = "lambda.min")
+```
+
+```{r}
+plot(cv_ridge)
+```
+
+
+
+#### LASSO
+
+By default, `alpha = 1`, and hence the elastic-net parameter $\alpha$ need not be provided to `glmnet` when estimating a LASSO:
+
+```{r}
+fit_LASSO = glmnet(x = X, y = y)
+plot(fit_LASSO, xvar = "lambda")
+```
+
+Cross-validation:
+
+```{r, results = "hide"}
+cv_LASSO = cv.glmnet(x = X, y = y)
+cv_LASSO$lambda.min
+cv_LASSO$lambda.1se
+results[, est_LASSO := coef(cv_LASSO, s = "lambda.min")[,1]]
+results[, est_LASSO_1se := coef(cv_LASSO, s = "lambda.1se")[,1]]
+coef(cv_LASSO, s = "lambda.min")
+```
+
+```{r}
+plot(cv_LASSO)
+```
+
+
+
+#### Out-of-sample prediction
+
+We first simulate new inputs and a corresponding output.
+
+```{r, results = "hide"}
+n_new = 100000
+
+set.seed(901)
+X_new       = matrix(runif(n_new*p), nrow = n_new, ncol = p)
+epsilon_new = rnorm(n_new, sd = error_sd)
+y_new       = X_new %*% beta + epsilon_new
+
+DT_new = as.data.table(X_new)
+setnames(DT_new, names(DT_new), c(new_names_true, new_names_false))
+```
+
+Calculate the mean-squared-error of the predictions:
+
+```{r}
+pred_y_OLS = predict(fit_OLS, newdata = DT_new)
+mse_OLS    = mean((y_new - pred_y_OLS)^2)
+
+pred_y_ridge = predict(cv_ridge, newx = X_new, s = "lambda.min")
+mse_ridge    = mean((y_new - pred_y_ridge)^2)
+
+pred_y_LASSO = predict(cv_LASSO, newx = X_new, s = "lambda.min")
+mse_LASSO    = mean((y_new - pred_y_LASSO)^2)
+```
+
+\medskip 
+
+A note on how to use the `model.matrix` function. Because `DT_new` does not contain the output that we would like to predict, the output must not be used in the model formula:
+
+```{r}
+X_new_ = model.matrix(~ 0 + ., data = DT_new)
+```
+
+Generally, be **very careful when you specify the formula in `model.matrix`**. The resulting matrix needs to contain exactly the same variables as in the original regression, and the columns need to be in the correct order, corresponding to the order of the variables in the matrix that was used to estimate the model! One common mistake *if* your data.table (data frame) contains an output:
+
+```{r, results = "hide"}
+DT_new_ = as.data.table(X_new)
+DT_new_[, y := y_new]
+setnames(DT_new_, names(DT_new_), c(new_names_true, new_names_false, "y"))
+```
+
+```{r}
+X_new_ = model.matrix(~ 0 + ., data = DT_new_)
+ncol(X_new)
+ncol(X_new_)
+```
+
+`X_new_` has one more column than `X_new`, because here the output was **not** specified on the left-hand side of the model formula. Hence, the output was added to the columns on the right-hand side. To create the correct matrix of inputs in this example we need to use:
+
+```{r}
+X_new_ = model.matrix(y ~ 0 + ., data = DT_new_)
+```
+
+\medskip
+
+The regression results and MSE's:
+
+```{r}
+kable(results, digits = 3)
+```
+
+```{r}
+cat(mse_OLS, mse_ridge, mse_LASSO, "\n")
+```
+
+
+
+\newpage
+
+#### Elastic net: Tune the `alpha` parameter
+
+We now manually tune the `alpha` parameter to estimate an elastic net (no such tuning function is directly provided by `glmnet`).
+
+First, simulate a new data set. Here, the "true" inputs are uniformly distributed on $[-b, b]$, where $b$ is specified using the `bounds` parameter below.
+
+```{r, results = "hide"}
+set.seed(963)
+
+N_true_inputs  = 10      # Number of true inputs
+N_false_inputs = 5       # Number of false inputs
+bound          = 0.9     # Bound value for simulation of coefficients
+n_obs          = 1000    # Number of observations
+error_sd       = 1       # Standard deviation of the error term
+
+# Total number of inputs (not including the intercept)
+p = N_true_inputs + N_false_inputs
+
+# Paramter vector
+beta = c(runif(N_true_inputs, min = -bound, max = bound), rep(0.0, N_false_inputs))
+
+# Simulate the data
+X       = matrix(runif(n_obs*p), nrow = n_obs, ncol = p)
+epsilon = rnorm(n_obs, sd = error_sd)
+y       = X %*% beta + epsilon
+```
+
+\medskip
+
+Now we find the `alpha` value that provides the lowest cross-validation error. We thus estimate the elastic net over a grid of $\alpha$ values, $\alpha = 0,0.01, \dots, 0.99,1$.
+
+Note that we provide the fold numbers (`folds`) directly to `cv.glmnet`. This is important, so that we can compare the prediction error for the *excact same folds* across different `alpha` values.
+
+```{r}
+set.seed(1999)
+
+# Create the folds
+folds = sample(1:10, n_obs, replace = TRUE)
+
+# Output table
+rmse_DT = data.table(alpha         = seq(0, 1, by = 0.01),
+                     mean_cv_error = rep(0, 101))
+
+# Calculate cross-validation error for different alpha values
+for (i in 0:100) {
+   cv_i = cv.glmnet(x = X, y = y, alpha = rmse_DT[i+1, alpha], foldid = folds)
+   rmse_DT[i+1, mean_cv_error := min(cv_i$cvm)]
+}
+
+# Optimal alpha:
+index_min = which.min(rmse_DT$mean_cv_error)
+rmse_DT[index_min, alpha]
+```
+
+Experiment with the settings. You will find that a ridge regression will be favored if the true regression coefficients are small, and a LASSO will be favored if the coefficients are large. A LASSO will also be favored if there are many coefficients that are zero.
+
+

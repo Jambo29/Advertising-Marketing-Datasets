@@ -1,0 +1,118 @@
+---
+title: "Advertising Simulator"
+author: "Günter J. Hitsch"
+date: "January 24, 2017"
+output: pdf_document
+urlcolor: blue
+graphics: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE,
+                      fig.width = 4.5, fig.height = 3, fig.align = "right")
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+```
+
+
+
+
+#### Model
+
+Demand function:
+$$\log(Q_t) = \alpha + \gamma g_t$$
+Goodwill:
+$$g_{t} = \log(a_{t}) + \delta \log(a_{t-1}) + \dots + \delta^{L} \log(a_{t-L})$$
+
+
+#### Sales response simulation function
+
+- `T`: prediction horizon
+- `adv_base_level`: Constant base level of advertising
+- `adv_insert`: Vector of advertising levels that are added to the base level (values can be negative)
+- `insert_t`: Period when first element in `adv_insert` is added to the base level of advertising (between 1 and `T`)
+- `param`: List of model parameters
+
+```{r}
+advertisingResponse <- function(T, adv_base_level, adv_insert, insert_t, param) {
+   if (insert_t > T) stop("Insert time outside simulation period")
+   
+   geom_weights = cumprod(c(1.0, rep(param$delta, param$L)))
+   geom_weights = sort(geom_weights)
+   
+   # Pad with zero values before and after insertin period
+   adv_insert = c(rep(0, insert_t-1), adv_insert, rep(0, T))
+   
+   log_Q = rep(NA, times = T)
+   adv   = rep(adv_base_level, param$L)
+   for (t in 1:T) {
+      adv = c(adv, adv_base_level + adv_insert[t])
+      g   = sum(geom_weights*tail(log(adv), param$L+1))
+      log_Q[t] = param$alpha + param$gamma*g
+   }
+   
+   L = length(adv)
+   DT = data.table(time  = 1:T,
+                   adv   = adv[(L-T+1):L],
+                   log_Q = log_Q)
+   
+   return(DT)
+}
+```
+
+
+#### Parameter settings
+
+```{r}
+parameters = list(alpha = 1.0,
+                  gamma = 1.0,
+                  delta = 0.8,
+                  L     = 10   )
+```
+
+
+#### Simulation
+
+
+```{r}
+T              = 20
+adv_base_level = 1
+insert_t       = 4
+adv_insert     = c(4, 4, 2)
+
+DT = advertisingResponse(T, adv_base_level, adv_insert, insert_t, parameters)
+```
+
+
+\newpage
+
+#### Graph the response
+
+```{r}
+ggplot(DT, aes(x = time, y = adv)) +
+   geom_vline(xintercept = c(insert_t, min(insert_t+length(adv_insert), T)),
+              color = "lightblue1", size = 2, alpha = 0.8) + 
+   geom_step(color = "gray75", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "hotpink", size = 1.75, stroke = 0.5) +
+   scale_x_continuous(minor_breaks = 1:T) +
+   theme_bw()
+
+# ggsave("Simulated-Adv.pdf", width = 6, height = 2)
+```
+
+```{r}
+ggplot(DT, aes(x = time, y = log_Q)) +
+   geom_vline(xintercept = c(insert_t, min(insert_t+length(adv_insert)+parameters$L, T)),
+              color = "lightblue1", size = 2, alpha = 0.8) + 
+   geom_step(color = "gray75", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "midnightblue", size = 1.75, stroke = 0.5) +
+   scale_x_continuous(minor_breaks = 1:T) +
+   theme_bw()
+
+# ggsave("Simulated-Sales.pdf", width = 6, height = 2)
+```
+
+

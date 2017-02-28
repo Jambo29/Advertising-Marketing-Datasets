@@ -1,0 +1,66 @@
+---
+title: "Private Label Demand: Zillow Data Construction"
+author: "Günter J. Hitsch"
+date: "1/13/2017"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE,
+                      fig.width = 4.5, fig.height = 3, fig.align = "right")
+```
+
+```{r}
+library(bit64)
+library(data.table)
+library(stringr)        # For the str_sub function
+```
+
+
+
+Get the Zillow data (in csv format) from the Zillow website:
+
+```{r}
+zillow_DT = fread("http://files.zillowstatic.com/research/public/Zip/Zip_Zhvi_AllHomes.csv")
+names(zillow_DT)[1:20]
+```
+
+Note that all Zillow home value indices are in columns!
+
+`melt` the table from wide to long format:
+
+```{r}
+zillow_DT = melt(zillow_DT, id.vars       = names(zillow_DT)[1:7],
+                            measure.vars  = names(zillow_DT)[8:ncol(zillow_DT)],
+                            variable.name = "date",
+                            value.name    = "zillow_index")
+head(zillow_DT)
+```
+
+Clean the data:
+
+1. Convert `date` to year and month
+2. `RegionName` is the ZIP code variable
+3. Remove some variables, set preferred column order and key
+
+```{r, results = "hide"}
+zillow_DT[, date := as.character(date)]
+zillow_DT[, `:=`(year     = as.integer(as.numeric(str_sub(date, 1L, 4L))),
+                 month    = as.integer(as.numeric(str_sub(date, -2L))),
+                 zip_code = as.integer(RegionName))]
+zillow_DT[, c("RegionID", "RegionName") := NULL]
+
+setcolorder(zillow_DT, c("zip_code", "year", "month", "zillow_index", "date",
+                         "City", "State", "Metro", "CountyName", "SizeRank"))
+setkey(zillow_DT, zip_code, year, month)
+```
+
+Save the data.
+
+```{r}
+save(zillow_DT, file = "./Data/Zillow-Data.RData")
+```
+
+
+

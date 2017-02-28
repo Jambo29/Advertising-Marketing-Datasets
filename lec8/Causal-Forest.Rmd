@@ -1,0 +1,279 @@
+---
+title: "Causal Forest"
+author: "Günter J. Hitsch"
+date: "February 19, 2017"
+output: pdf_document
+urlcolor: blue
+graphics: yes
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE,
+                      fig.width = 4.5, fig.height = 3.25, fig.align = "right")
+```
+
+
+
+
+## Installation
+
+The `causalTree` package is actively being developed and it needs to be installed and compiled from sources. This is not hard, but you first need to install the necessary development environment.
+
+#### Step 1
+
+**Windows**: Download and install [Rtools](https://cran.r-project.org/bin/windows/Rtools/).
+
+**Mac OS**: Download `Xcode` from the App Store. Warning: `Xcode` may take more than one hour to download. Then launch the `Xcode` application and accept the license terms. Open the `Terminal` (command line) application (installed on any Mac and located in `/Applications/Utilities`). In the `Terminal` window type:
+
+```{}
+xcode-select --install
+```
+
+An alert box should appear; click *Install* to proceed.
+
+#### Step 2
+
+Once step 1 is completed reboot your computer (just to be on the safe side). Then install the R package `devtools`.
+
+\bigskip
+
+Now you can install and build the `causalTree` package:
+
+```{r, eval = FALSE}
+library(devtools)
+install_github("walterwzhang/causalTree")
+```
+
+\newpage
+
+
+
+
+## Causal forest example
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(causalTree)
+library(broom)
+library(knitr)
+```
+
+\bigskip
+
+
+We simulate a data set that includes the following variables:
+
+- `target` is the *treatment*, a dummy variable indicating if a customer was targeted (e-mail/catalog). The treatment assignment is random.
+- `spend` is observed dollar spending.
+- `recency` is the customer recency status (in months), ranging from 1 to 18.
+- `web_buyer` is a dummy variable that indicates if a customer is a frequent user of the company's website.
+
+The purchase probability $p$ takes the following form:
+
+1. **Customers who are not targeted**. For `recency` between 1 and 6, $p=0$. Then, for `recency` between 7 and 12, $p$ increases in `recency` and takes the value $p = 0.03 \cdot (\texttt{recency} - 6)$. For all values of `recency` above 12, $p = 0.03 \cdot 6 = 0.18$.
+
+2. **Customers who are targeted**
+
+    (a) If `web_buyer`, then $p$ is 1.25 times the baseline purchase probability.
+    (b) If not `web_buyer`, then $p$ is twice the the baseline purchase probability.
+    
+Spending *conditional* on a purchase is uniformly distributed on the values $80,81,\dots,119,120$, with a corresponding mean of 100. Hence, expected spending is $100 \cdot p$.
+
+In this model, the treatment effect is non-linear in `recency`, and the treatment effect is larger (for `recency` above 6) for customers who are not a `web_buyer`.
+
+\medskip
+
+```{r, results = "hide"}
+set.seed(941)
+
+n_obs  = 100000        # Training
+n_pred = 100000        # Prediction
+n = n_obs + n_pred
+
+customer_DT = data.table(recency   = sample.int(18, size = n, replace = TRUE),
+                         web_buyer = rbinom(n, 1, 1/3),
+                         target    = rbinom(n, 1, 0.5))
+
+# Define the purchase probability p
+customer_DT[recency <= 6,                 p := 0.0]
+customer_DT[recency >  6 & recency <= 12, p := 0.03*(recency - 6)]
+customer_DT[recency > 12,                 p := 0.03*6]
+customer_DT[web_buyer == 1 & target == 1, p := 1.25*p]
+customer_DT[web_buyer == 0 & target == 1, p := 2*p]
+
+# Simulate spending data
+customer_DT[, purchase   := runif(n) <= p]
+customer_DT[, cond_spend := 79 + sample.int(41, size = n, replace = TRUE)]
+customer_DT[, spend      := purchase*cond_spend]
+
+training_DT = customer_DT[1:n_obs]
+pred_DT     = customer_DT[(n_obs+1):n]
+```
+
+\bigskip
+
+Now we estimate the causal forest. Note that we need to specify the treatment variable.
+
+Note: When first estimating a causal forest, I recommend to set the `num.trees` (number of trees) option to a small value, maybe 10, to get a sense how much computation time is involved.
+
+The `verbose` option was added for your convenience but is not part of the original package. Set to `FALSE` if you don't want to see the output messages indicating the progress in growing the random forest.
+
+```{r, results = "hide"}
+fit = causalForest(spend ~ recency + web_buyer,
+                   treatment = training_DT$target,
+                   data = training_DT,
+                   num.trees = 1000,
+                   verbose = TRUE)
+```
+
+Predict spending in the prediction sample.
+
+```{r, results = "hide"}
+pred_DT[, pred_treatment_effect := predict(fit, pred_DT)]
+```
+
+Now we create a table with the true, observed, and predicted conditional average treatment effects ($\tau$) for all values of `web_buyer` and `recency`.
+
+```{r}
+summary_DT = pred_DT[, .(tau      = 100*(mean(p[target==1]) - mean(p[target==0])),
+                         tau_obs  = mean(spend[target==1]) - mean(spend[target==0]),
+                         tau_pred = mean(pred_treatment_effect)),
+                     keyby = .(web_buyer, recency)]
+```
+
+\newpage
+
+```{r}
+kable(summary_DT[web_buyer == 0], digits = 2)
+```
+
+```{r}
+kable(summary_DT[web_buyer == 1], digits = 2)
+```
+
+\newpage
+
+
+#### Model fit: causal forest
+
+```{r}
+ggplot(summary_DT[web_buyer == 0], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+```{r}
+ggplot(summary_DT[web_buyer == 1], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+\newpage
+
+
+#### Model fit: OLS
+
+```{r, results = "hide"}
+minimal_DT = training_DT[, .(spend, recency, web_buyer, target)]
+
+fit_OLS = lm(spend ~ . + .*target + web_buyer:recency*target,
+             data = minimal_DT)
+
+pred_DT[, pred_spend_OLS := predict(fit_OLS, pred_DT)]
+
+summary_OLS_DT = pred_DT[, .(tau_pred_OLS = mean(pred_spend_OLS[target==1])
+                                          - mean(pred_spend_OLS[target==0])),
+                         keyby = .(web_buyer, recency)]
+summary_OLS_DT = merge(summary_OLS_DT, summary_DT[, .(web_buyer, recency, tau)],
+                       by = c("web_buyer", "recency"))
+```
+
+```{r}
+ggplot(summary_OLS_DT[web_buyer == 0], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred_OLS),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred_OLS),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+```{r}
+ggplot(summary_OLS_DT[web_buyer == 1], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred_OLS),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred_OLS),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+\newpage
+
+
+#### Model fit: OLS with polynomials
+
+```{r, results = "hide"}
+minimal_DT = training_DT[, .(spend, recency, web_buyer, target)]
+
+fit_OLS = lm(spend ~ target*web_buyer + poly(recency,3)*web_buyer + poly(recency,3):target*web_buyer,
+             data = minimal_DT)
+
+pred_DT[, pred_spend_OLS := predict(fit_OLS, pred_DT)]
+
+summary_OLS_DT = pred_DT[, .(tau_pred_OLS = mean(pred_spend_OLS[target==1])
+                                          - mean(pred_spend_OLS[target==0])),
+                         keyby = .(web_buyer, recency)]
+summary_OLS_DT = merge(summary_OLS_DT, summary_DT[, .(web_buyer, recency, tau)],
+                       by = c("web_buyer", "recency"))
+```
+
+
+```{r}
+ggplot(summary_OLS_DT[web_buyer == 0], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred_OLS),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred_OLS),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+```{r}
+ggplot(summary_OLS_DT[web_buyer == 1], aes(x = recency, y = tau)) +
+   geom_line(color = "navyblue", size = 0.5) +
+   geom_point(shape = 21, color = "gray30", fill = "navyblue", size = 2, stroke = 0.5) +
+   geom_line(aes(x = recency, y = tau_pred_OLS),
+             color = "mediumvioletred", size = 0.5) +
+   geom_point(aes(x = recency, y = tau_pred_OLS),
+              shape = 21, color = "gray30", fill = "mediumvioletred", size = 2, stroke = 0.5) +
+   
+   theme_bw()
+```
+
+```{r}
+out = tidy(summary(fit_OLS))
+kable(out, digits = 2)
+```
+
+
+

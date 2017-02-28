@@ -1,0 +1,112 @@
+---
+title: "Regression and Classification Trees"
+author: "Günter J. Hitsch"
+date: "February 21, 2017"
+output: pdf_document
+urlcolor: blue
+graphics: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, message = FALSE,
+                      fig.width = 7, fig.height = 6, fig.align = "right")
+```
+
+```{r, include = FALSE}
+library(data.table)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(knitr)
+```
+
+
+
+
+## Regression trees
+
+As an example, we use household-level private label share data aggregated at the *year* level.
+
+```{r}
+load("./Data/PL_shares_annual.RData")
+```
+
+Convert all categorical variables to factors. The `rpart` package will then understand that these variables are categorical.
+
+```{r, results = "hide"}
+categorical_vars = c("unemployed", "has_children", "female_head", "size")
+PL_shares_DT[, (categorical_vars) := lapply(.SD, as.factor), .SDcols = categorical_vars]
+```
+
+Now build a regression tree (`method = "anova"`).
+
+```{r}
+tree = rpart(PL_share ~ ., data = PL_shares_DT, method = "anova",
+             control = rpart.control(minsplit = 20, cp = 0.001, maxdepth = 5))
+```
+
+The cost-complexity parameter `cp` is key: If the algorithm does not split, make the parameter smaller. `minsplit` determines the minimum number of observations in a node such that a split is attempted, `maxdepth` determines the depth (length) of a tree.
+
+```{r}
+N_terminal_nodes = length(unique(tree$where))
+rpart.plot(tree, tweak = 0.8, digits = 3)
+```
+
+
+
+#### Cost-complexity pruning
+
+Grow a large tree:
+
+```{r}
+tree = rpart(PL_share ~ ., data = PL_shares_DT, method = "anova",
+             control = rpart.control(minsplit = 20, cp = 0.00005))
+
+N_terminal_nodes = length(unique(tree$where))
+# rpart.plot(tree, tweak = 0.8, digits = 3)
+```
+
+Visualize the cross-validation results:
+
+```{r}
+plotcp(tree)
+```
+
+Find the optimal complexity parameter:
+
+```{r}
+index_optimal = which.min(tree$cptable[, "xerror"])
+cp_optimal    = tree$cptable[index_optimal, "CP"]
+size_optimal  = tree$cptable[index_optimal, "nsplit"] + 1
+```
+
+Prune the tree:
+
+```{r}
+pruned_tree = prune(tree, cp = cp_optimal)
+# rpart.plot(pruned_tree)
+```
+
+
+
+\newpage
+
+## Classification trees
+
+Use the RFM data to predict if a customer buys.
+
+```{r}
+load("./Data/RFM-Data.RData")
+```
+
+Use the `method = "class"` option for classification.
+
+```{r}
+tree = rpart(buyer ~ ., data = rfm_DT, method = "class",
+             control = rpart.control(minsplit = 20, cp = 0.00005))
+
+rpart.plot(tree, tweak = 0.8, digits = 3)
+```
+
+
+

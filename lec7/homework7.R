@@ -29,7 +29,7 @@
 	crm_DT[, training_sample := rbinom(nrow(crm_DT), 1, 0.5)]
 
 # Describe the data
-	#crmDT[mailing_indicator == 1, outcome_spend]
+	crm_DT[outcome_spend > 0, sum(outcome_spend), by = customer_id]
 
 # Make correlation plot
 	cor_matrix <- cor(crm_DT[, !c("customer_id", "mailing_indicator", "outcome_spend"), with = FALSE])
@@ -47,9 +47,8 @@
 	crm_DT <- crm_DT[ ,!remove, with = FALSE] # new DT
 
 # Build models on sample
-	
 	train <- crm_DT[training_sample == 1][ ,training_sample := NULL][]
-	test <- crm_DT[training_sample == 0][ ,c("outcome_spend", "training_sample") := NULL][]
+	test <- crm_DT[training_sample == 0][ ,c("training_sample") := NULL][]
 
 	# OLS
 	ols.model <- glm(outcome_spend ~., data = train)
@@ -70,8 +69,8 @@
 		print(paste("Finished", i, "of", NROW(mse_eval)))
 	}
 
-	best.alpha <- mse_eval[which.min(mse_eval$mse)]$alphas # 0.5
-	elastic.net <- cv.glmnet(x = x, y = y, alpha =  0.5, family = "gaussian") # re-run cv at best alpha
+	best.alpha <- mse_eval[which.min(mse_eval$mse)]$alphas # 0.1
+	elastic.net <- cv.glmnet(x = x, y = y, alpha =  0.1 family = "gaussian") # re-run cv at best alpha
 	coef.elastic.net <- coef(elastic.net, s = "lambda.min")
 
 	# RF
@@ -103,19 +102,26 @@
 	logit <- glm(spend ~., data = trainlogit, family = "binomial")
 	phats <- predict(logit, newdata = testlogit, type = "response")
 
+	ROC <- roc(response = testlogit$spend, predictor = unlist(phats))
+
+	df <- ROC$sensitivities + ROC$specificities
+	optimal.phat <- phats[which.max(df)]
+	phats.new <- phats[phats >= optimal.phat]
+	testlogit <- test[phats >= optimal.phat]
+
 	# Predict Amount of spending
-	linear     	<- lm(outcome_spend ~ ., data = train)
-	yhats  		<- predict(linear, newdata = test)
+	trainlinear <- train[outcome_spend > 0]
+	linear     	<- lm(outcome_spend ~ ., data = trainlinear)
+	yhats  		<- predict(linear, newdata = testlogit)
 	
 	# Can't get this working 	
-	linear.log 	<- lm(log(outcome_spend + 1) ~ ., data = train)
-	yhats.log 	<- predict(linear.log, newdata = test)
-	yhats.log <- exp(yhats.log + ((summary(linear.log)$sigma) ^ 2 / 2))
+	linear.log 	<- lm(log(outcome_spend) ~ ., data = trainlinear)
+	yhats.log 	<- predict(linear.log, newdata = testlogit)
+	yhats.log   <- exp(yhats.log + ((summary(linear.log)$sigma) ^ 2 / 2))
 
 	# Conditional expectation
-	conditional.expectation <- phats * yhats
+	conditional.expectation <- phats.new * yhats
 
 	# MSE comparison
-	getMSE(conditional.expectation)
-
+	getMSE(conditional.expectation, true = testlogit$outcome_spend)
 # Lift tables

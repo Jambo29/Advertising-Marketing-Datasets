@@ -1,2 +1,1 @@
-# datascience_marketing
-Data Science for Marketing Decision Making
+Marketing research is "the process or set of processes that links the producers, customers, and end users to the marketer through information  — information used to identify and define marketing opportunities and problems; generate, refine, and evaluate marketing actions; monitor marketing performance; and improve understanding of marketing as a process. 
